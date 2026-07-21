@@ -21,20 +21,20 @@ bootstrap:
 
 terminate:
     mov [dl_loc], dl
-    mov ah, 0x02
-    mov al, 0x02
-    mov ch, 0x00
-    mov dh, 0x00
-    mov cl, 0x02
-    mov bx, 0x7E00
+    mov ah, 0x02 ; read sectors from drive
+    mov al, 0x03 ; how many sectors to read
+    mov ch, 0x00 ; cylinder
+    mov dh, 0x00 ; head
+    mov cl, 0x02 ; sector start (1 indexed)
+    mov bx, 0x7E00 ; ES:BX (far jump shape)
     mov dl, [dl_loc]
-    int 0x13
+    int 0x13 ; call the 0x13 disk read interrupt
     jc .error
-    jmp 0x0000:0x7E00
+    jmp 0x0000:0x7E00 ; far jump into ram
     .error:
         mov si, errmsg
         call print_string
-        jmp $
+        jmp $ ; halt on error
 
 print_bytes:
     mov si, msg

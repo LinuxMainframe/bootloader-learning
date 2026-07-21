@@ -23,6 +23,7 @@ cyl_msg db "You have the following cylinders available: 0x", 0
 hd_msg db "You have the following heads available: 0x", 0
 sec_msg db "You have the following sectors available: 0x", 0
 
+mem_msg db "Memory Allocation Table:", 0x0D, 0x0A, 0
 memory_mapping db "MEMORY ALLOCATION :    0x", 0
 _64bit_add db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0
 with db " with ", 0
@@ -47,143 +48,9 @@ entry:
     mov [dl_loc], dl
     call get_drive_params
     call get_memory_map
+    call print_memory_map
     jmp $
 
-;; get_drive_params
-;; Queries BIOS drive geometry using INT 13h, AH=08h.
-;; Decodes maximum Cylinder, Head, and Sector per Track (CHS) values.
-;; Prints formatted hex and decimal values for each parameter.
-;;
-;; Inputs:
-;;      [dl_loc] - Drive number (e.g., 0x00 for Floppy, 0x80 for 1st Hard Disk)
-;; Outputs:
-;;      [cyl_max] - Maximum cylinder count (0-based max index)
-;;      [hd_max]  - Maximum head count (0-based max index)
-;;      [sec_max] - Maximum sectors per track (1-based max count)
-get_drive_params:
-    pusha                              ; preserve registers across execution
-
-    mov ah, 0x08                       ; INT 13h AH=08h: Read Drive Parameters
-    mov dl, [dl_loc]                   ; load drive index
-    int 0x13
-    jc .failed_read                    ; Carry Flag set = Read Error
-
-    ; -------------------------------------------------------------------------
-    ; Decode Geometry
-    ; CH = Low 8 bits of Maximum Cylinder
-    ; CL = Bits 6-7: High 2 bits of Maximum Cylinder | Bits 0-5: Max Sectors
-    ; DH = Maximum Head Number (0-based)
-    ; -------------------------------------------------------------------------
-    
-    ; 1. Process Cylinder Number (10 bits total: CH + CL[7:6])
-    mov bl, cl                         ; BL = CL
-    and bl, 0xC0                       ; Mask out sectors, keeping top 2 bits (bits 6-7)
-    rol bl, 2                          ; Rotate left 2 bits (moves bits 6-7 to bits 0-1)
-    mov bh, bl                         ; BH = High 2 bits of cylinder
-    mov bl, ch                         ; BL = Low 8 bits of cylinder
-    mov [cyl_max], bx                  ; Store 10-bit cylinder value into 16-bit variable
-
-    ; 2. Process Sector Count (Bits 0-5 of CL)
-    and cl, 0x3F                       ; Mask off cylinder bits, keep 6-bit sector count
-    mov [sec_max], cl                  ; Store max sector count
-
-    ; 3. Process Head Count (DH)
-    mov [hd_max], dh                   ; Store max head count
-
-    ; -------------------------------------------------------------------------
-    ; Print Maximum Cylinder Parameter
-    ; -------------------------------------------------------------------------
-    mov di, data_out_ascii
-    mov ax, [cyl_max]                  ; 16-bit Cylinder value
-    mov cx, 0x04                       ; 4 hex digits
-    call bin_to_hex_ascii16
-
-    mov si, cyl_msg
-    call print_string
-
-    mov si, data_out_ascii
-    call print_string
-
-    mov si, open_paren
-    call print_string
-
-    mov di, bin_ascii
-    mov ax, [cyl_max]
-    call bin_to_dec_ascii16
-    mov si, bin_ascii
-    call print_string
-
-    mov si, closed_paren
-    call print_string
-
-    mov si, return_msg
-    call print_string
-
-    ; -------------------------------------------------------------------------
-    ; Print Maximum Head Parameter
-    ; -------------------------------------------------------------------------
-    mov di, data_out_ascii
-    movzx ax, byte [hd_max]            ; Zero-extend 8-bit head value into 16-bit AX
-    mov cx, 0x04                       ; 4 hex digits
-    call bin_to_hex_ascii16
-
-    mov si, hd_msg
-    call print_string
-
-    mov si, data_out_ascii
-    call print_string
-
-    mov si, open_paren
-    call print_string
-
-    mov di, bin_ascii
-    movzx ax, byte [hd_max]            ; Zero-extend 8-bit head value into AX
-    call bin_to_dec_ascii16
-    mov si, bin_ascii
-    call print_string
-
-    mov si, closed_paren
-    call print_string
-
-    mov si, return_msg
-    call print_string
-
-    ; -------------------------------------------------------------------------
-    ; Print Maximum Sector Parameter
-    ; -------------------------------------------------------------------------
-    mov di, data_out_ascii
-    movzx ax, byte [sec_max]           ; Zero-extend 8-bit sector value into 16-bit AX
-    mov cx, 0x04                       ; 4 hex digits
-    call bin_to_hex_ascii16
-
-    mov si, sec_msg
-    call print_string
-
-    mov si, data_out_ascii
-    call print_string
-
-    mov si, open_paren
-    call print_string
-
-    mov di, bin_ascii
-    movzx ax, byte [sec_max]           ; Zero-extend 8-bit sector value into AX
-    call bin_to_dec_ascii16
-    mov si, bin_ascii
-    call print_string
-
-    mov si, closed_paren
-    call print_string
-
-    mov si, return_msg
-    call print_string
-
-    popa                               ; restore registers
-    ret
-
-    .failed_read:
-        mov si, read_err
-        call print_string
-        jmp $                              ; Halt execution on disk read failure
 
 ;; print string
 ;; caller must set SI to the starting address of the character array (char *buffer[])
@@ -363,6 +230,141 @@ bin_to_dec_ascii32:
         pop eax
         ret
 
+;; get_drive_params
+;; Queries BIOS drive geometry using INT 13h, AH=08h.
+;; Decodes maximum Cylinder, Head, and Sector per Track (CHS) values.
+;; Prints formatted hex and decimal values for each parameter.
+;;
+;; Inputs:
+;;      [dl_loc] - Drive number (e.g., 0x00 for Floppy, 0x80 for 1st Hard Disk)
+;; Outputs:
+;;      [cyl_max] - Maximum cylinder count (0-based max index)
+;;      [hd_max]  - Maximum head count (0-based max index)
+;;      [sec_max] - Maximum sectors per track (1-based max count)
+get_drive_params:
+    pusha                              ; preserve registers across execution
+
+    mov ah, 0x08                       ; INT 13h AH=08h: Read Drive Parameters
+    mov dl, [dl_loc]                   ; load drive index
+    int 0x13
+    jc .failed_read                    ; Carry Flag set = Read Error
+
+    ; -------------------------------------------------------------------------
+    ; Decode Geometry
+    ; CH = Low 8 bits of Maximum Cylinder
+    ; CL = Bits 6-7: High 2 bits of Maximum Cylinder | Bits 0-5: Max Sectors
+    ; DH = Maximum Head Number (0-based)
+    ; -------------------------------------------------------------------------
+    
+    ; 1. Process Cylinder Number (10 bits total: CH + CL[7:6])
+    mov bl, cl                         ; BL = CL
+    and bl, 0xC0                       ; Mask out sectors, keeping top 2 bits (bits 6-7)
+    rol bl, 2                          ; Rotate left 2 bits (moves bits 6-7 to bits 0-1)
+    mov bh, bl                         ; BH = High 2 bits of cylinder
+    mov bl, ch                         ; BL = Low 8 bits of cylinder
+    mov [cyl_max], bx                  ; Store 10-bit cylinder value into 16-bit variable
+
+    ; 2. Process Sector Count (Bits 0-5 of CL)
+    and cl, 0x3F                       ; Mask off cylinder bits, keep 6-bit sector count
+    mov [sec_max], cl                  ; Store max sector count
+
+    ; 3. Process Head Count (DH)
+    mov [hd_max], dh                   ; Store max head count
+
+    ; -------------------------------------------------------------------------
+    ; Print Maximum Cylinder Parameter
+    ; -------------------------------------------------------------------------
+    mov di, data_out_ascii
+    mov ax, [cyl_max]                  ; 16-bit Cylinder value
+    mov cx, 0x04                       ; 4 hex digits
+    call bin_to_hex_ascii16
+
+    mov si, cyl_msg
+    call print_string
+
+    mov si, data_out_ascii
+    call print_string
+
+    mov si, open_paren
+    call print_string
+
+    mov di, bin_ascii
+    mov ax, [cyl_max]
+    call bin_to_dec_ascii16
+    mov si, bin_ascii
+    call print_string
+
+    mov si, closed_paren
+    call print_string
+
+    mov si, return_msg
+    call print_string
+
+    ; -------------------------------------------------------------------------
+    ; Print Maximum Head Parameter
+    ; -------------------------------------------------------------------------
+    mov di, data_out_ascii
+    movzx ax, byte [hd_max]            ; Zero-extend 8-bit head value into 16-bit AX
+    mov cx, 0x04                       ; 4 hex digits
+    call bin_to_hex_ascii16
+
+    mov si, hd_msg
+    call print_string
+
+    mov si, data_out_ascii
+    call print_string
+
+    mov si, open_paren
+    call print_string
+
+    mov di, bin_ascii
+    movzx ax, byte [hd_max]            ; Zero-extend 8-bit head value into AX
+    call bin_to_dec_ascii16
+    mov si, bin_ascii
+    call print_string
+
+    mov si, closed_paren
+    call print_string
+
+    mov si, return_msg
+    call print_string
+
+    ; -------------------------------------------------------------------------
+    ; Print Maximum Sector Parameter
+    ; -------------------------------------------------------------------------
+    mov di, data_out_ascii
+    movzx ax, byte [sec_max]           ; Zero-extend 8-bit sector value into 16-bit AX
+    mov cx, 0x04                       ; 4 hex digits
+    call bin_to_hex_ascii16
+
+    mov si, sec_msg
+    call print_string
+
+    mov si, data_out_ascii
+    call print_string
+
+    mov si, open_paren
+    call print_string
+
+    mov di, bin_ascii
+    movzx ax, byte [sec_max]           ; Zero-extend 8-bit sector value into AX
+    call bin_to_dec_ascii16
+    mov si, bin_ascii
+    call print_string
+
+    mov si, closed_paren
+    call print_string
+
+    mov si, return_msg
+    call print_string
+
+    popa                               ; restore registers
+    ret
+
+    .failed_read:
+        mov si, read_err
+        call print_string
+        jmp $                              ; Halt execution on disk read failure
 
 ;; get_memory_map
 ;; Detects system RAM layout using BIOS interrupt 15h, AX=E820.
@@ -452,3 +454,62 @@ get_memory_map:
         mov si, hit_max_entries_msg
         call print_string
         jmp $                              ; Halt execution on overflow
+
+entry_num db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0D, 0x0A, 0
+base_addr db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0D, 0x0A, 0
+;; print_memory_map
+;; memory map entries start at 0x8100
+;; each is 24 bits
+;; we know if we have reached the final entry if our internal counter == entries (stored at 0x8D00)
+;; each starting read address is [0x8100 + (index * 24)], and the corresponding 20/24 bit declaration
+;; is found at 0x8D04 + (i*4)
+;; So we dont need any registers preset before doing this
+;;     _____________________________________________________________
+;;     | Offset 0:  Base Address   (8 bytes, low dword + high dword)
+;;     | Offset 8:  Length         (8 bytes, low dword + high dword)
+;;     | Offset 16: Type           (4 bytes) — 1=Usable, 2=Reserved, 3=ACPI Reclaimable, 4=ACPI NVS, 5=Bad Memory
+;;     | Offset 20: Ext Attributes (4 bytes, optional, only if BIOS returns 24)
+;;     -------------------------------------------------------------
+print_memory_map:
+    pusha
+    mov si, mem_msg
+    call print_string
+    mov si, 0x8100 ; set SI to location of 0xE820 buffer
+    mov cx, [0x8D00] ; set CX to the number of entries
+    mov bx, 0 ; set entry counter for being used with displaying the ascii representations
+    .entry_loop:
+        mov al, 24 ; we need 24 bytes per entry
+        mul bl ; we multiply the entry number by 24
+        add ax, 0x8100 ; we then add the base offset address
+        mov bp, ax ; and then we store in bp for later
+
+        ; print the entry number
+        inc bx ; increment bx so that the print mechanic will print a 1-indexed entry number
+        mov ax, bx ; mov bx into ax
+        mov di, entry_num ; set the address for saving the entry number
+        call bin_to_dec_ascii16 ; convert to ascii characters from binary
+
+        mov si, entry_num ; mov into si
+        call print_string ; print the ascii number
+
+        mov si, return_msg ; mov into si
+        call print_string ; print the newline carriage return
+
+        push bx
+        push cx
+        mov cx, 0x08
+        mov eax, [bp] ; move contents at address of bp to eax (only last four bytes)
+        mov di, base_addr
+        call bin_to_hex_ascii32 ; conver to ascii characters to display to screen (in hex format)
+        pop cx
+        pop bx
+
+        mov si, base_addr
+        call print_string
+        
+        ; now print contents of the buffer
+        cmp bx, cx ; have we reached the end of entries
+        jl .entry_loop ; if not, loop back
+        
+    popa
+    ret
