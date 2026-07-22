@@ -271,9 +271,6 @@ bin_to_dec_ascii64:
         or eax, [bp]                       ; Combine with Low 32 bits
         jnz .divide_loop                   ; If High OR Low != 0, keep dividing
 
-        ; Clean up stack frame
-        add sp, 8
-
     .pop_loop:
         pop dx                             ; Pop digit in reverse order
         mov [di], dl                       ; Write character to buffer
@@ -281,6 +278,10 @@ bin_to_dec_ascii64:
         loop .pop_loop                     ; Loop CX times
 
         mov byte [di], 0x0                 ; Null-terminate string
+
+        ; Clean up stack frame (only safe now that all pushed digits are drained)
+        add sp, 8
+
         popad                              ; Restore caller's registers
         ret
 
@@ -424,9 +425,9 @@ get_drive_params:
 ;; Detects system RAM layout using BIOS interrupt 15h, AX=E820.
 ;;
 ;; Memory Layout:
-;;   0x8100 - 0x8CFF : Memory map entries array (128 entries max * 24 bytes = 3KB)
-;;   0x8D00          : Word storing total number of retrieved entries (N)
-;;   0x8D04 + (i*4)  : Dword storing returned ECX size (20/24) for entry i
+;;   0x9000 - 0x9BFF : Memory map entries array (128 entries max * 24 bytes = 3KB)
+;;   0x9C00 - 0x9DFF : Dword array storing returned ECX size (20/24) for each entry (128 * 4 bytes)
+;;   0x9E00          : Word storing total number of retrieved entries (N)
 ;;
 ;; Entry structure at ES:DI (24 bytes):
 ;;      bytes 00-07 : Base address (64-bit)
@@ -445,8 +446,8 @@ get_memory_map:
     xor bx, bx                         ; ES = 0x0000
     mov es, bx
     
-    mov di, 0x8100                     ; ES:DI points to memory map entries (0x8100)
-    mov bp, 0x8D04                     ; BP points to ECX size tracking array
+    mov di, 0x9000                     ; ES:DI points to memory map entries (0x9000 - 0x9BFF)
+    mov bp, 0x9C00                     ; BP points to ECX size tracking array (0x9C00 - 0x9DFF)
     xor ebx, ebx                       ; Continuation offset (must start at 0)
     xor si, si                         ; Entry counter index (starts at 0)
 
@@ -471,7 +472,7 @@ get_memory_map:
         cmp eax, [smap_sign]               ; Verify EAX echoed 'SMAP' signature
         jne .error                         ; If signature mismatch, BIOS call failed
 
-        ; Store returned ECX size (20 or 24 bytes) into 0x8D04 + (SI * 4)
+        ; Store returned ECX size (20 or 24 bytes) into 0x9C00 + (SI * 4)
         mov dword [bp], ecx
         add bp, 4                          ; Advance size-array pointer
 
@@ -484,7 +485,7 @@ get_memory_map:
         jnz .loop                          ; If EBX != 0, fetch next entry
 
     .done:
-        mov [0x8D00], si                   ; Write total valid entries count to 0x8D00
+        mov [0x9E00], si                   ; Write total valid entries count to 0x9E00
         popa                               ; Restore caller's registers
         ret
 
@@ -520,7 +521,7 @@ type db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0
 
 
 ;; print_memory_map
-;; Prints formatted E820 memory map entries stored at 0x8100.
+;; Prints formatted E820 memory map entries stored at 0x9000.
 ;; Uses 64-bit decimal formatting for entry length and base address display.
 print_memory_map:
     pusha
@@ -528,17 +529,17 @@ print_memory_map:
     mov si, mem_msg
     call print_string
 
-    mov cx, [0x8D00]                   ; Load total entry count
+    mov cx, [0x9E00]                   ; Load total entry count
     test cx, cx                        ; Are there entries?
     jz .done                           ; If 0 entries, exit
 
     xor bx, bx                         ; BX = 0-based entry index
 
     .entry_loop:
-        ; BP = 0x8100 + (BX * 24)
+        ; BP = 0x9000 + (BX * 24)
         mov ax, 24
         mul bx                             ; AX = BX * 24
-        add ax, 0x8100                     ; Base memory offset
+        add ax, 0x9000                     ; Base memory offset
         mov bp, ax                         ; BP points to current 24-byte entry
 
         ; -------------------------------------------------------------------------
@@ -610,7 +611,7 @@ print_memory_map:
         mov si, return_msg
         call print_string
 
-        cmp bx, [0x8D00]                   ; Compare 1-based index against total count
+        cmp bx, [0x9E00]                   ; Compare 1-based index against total count
         jl .entry_loop                     ; Loop if BX < total count
 
     .done:
