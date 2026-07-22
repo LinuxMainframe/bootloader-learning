@@ -230,6 +230,60 @@ bin_to_dec_ascii32:
         pop eax
         ret
 
+;; bin_to_dec_ascii64
+;; Hardware-safe 64-bit integer to decimal ASCII conversion.
+;; Safely handles values up to 2^64 - 1 without triggering CPU #DE exceptions.
+;;
+;; Inputs:
+;;      EDX:EAX - 64-bit value to convert (EDX = High 32 bits, EAX = Low 32 bits)
+;;      DI      - Destination buffer (at least 21 bytes: 20 digits + null)
+bin_to_dec_ascii64:
+    pushad                             ; preserve 16-bit registers
+
+    ; Allocate local temporary variables on stack frame
+    push edx                           ; [BP-4] High 32 bits
+    push eax                           ; [BP-8] Low 32 bits
+    mov bp, sp                         ; BP points to stack frame
+
+    xor cx, cx                         ; CX = digit counter
+
+    .divide_loop:
+        ; --- Step 1: High 32-bit division ---
+        mov eax, [bp + 4]                  ; Load High 32 bits
+        xor edx, edx                       ; Clear EDX (Dividend = 0:EAX)
+        mov ebx, 10                        ; Divisor = 10
+        div ebx                            ; EAX = Quotient_High, EDX = Remainder1
+        mov [bp + 4], eax                  ; Store Quotient_High back to [BP+4]
+
+        ; --- Step 2: Low 32-bit division using Remainder1 ---
+        mov eax, [bp]                      ; Load Low 32 bits
+        ; EDX already contains Remainder1 (0-9) from Step 1!
+        div ebx                            ; EAX = Quotient_Low, EDX = Remainder_Final
+        mov [bp], eax                      ; Store Quotient_Low back to [BP]
+
+        ; --- Step 3: Store ASCII Digit ---
+        add dl, '0'                        ; Convert remainder (0-9) to ASCII character
+        push dx                            ; Push onto stack
+        inc cx                             ; Increment digit count
+
+        ; --- Step 4: Loop check (Is 64-bit Quotient zero?) ---
+        mov eax, [bp + 4]                  ; EAX = High 32 bits
+        or eax, [bp]                       ; Combine with Low 32 bits
+        jnz .divide_loop                   ; If High OR Low != 0, keep dividing
+
+        ; Clean up stack frame
+        add sp, 8
+
+    .pop_loop:
+        pop dx                             ; Pop digit in reverse order
+        mov [di], dl                       ; Write character to buffer
+        inc di                             ; Advance pointer
+        loop .pop_loop                     ; Loop CX times
+
+        mov byte [di], 0x0                 ; Null-terminate string
+        popad                              ; Restore caller's registers
+        ret
+
 ;; get_drive_params
 ;; Queries BIOS drive geometry using INT 13h, AH=08h.
 ;; Decodes maximum Cylinder, Head, and Sector per Track (CHS) values.
@@ -434,6 +488,7 @@ get_memory_map:
         popa                               ; Restore caller's registers
         ret
 
+
     .error:
         mov si, e820_err_msg
         call print_string
@@ -455,61 +510,109 @@ get_memory_map:
         call print_string
         jmp $                              ; Halt execution on overflow
 
-entry_num db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0D, 0x0A, 0
-base_addr db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0D, 0x0A, 0
+entry_num db 0x0, 0x0, 0x0, 0x0, 0x0, 0
+spacer db " : 0x", 0
+length_msg db " : length (bytes) ", 0
+type_msg db " | type: ", 0
+base_addr db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0
+length db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0
+type db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0
+
+
 ;; print_memory_map
-;; memory map entries start at 0x8100
-;; each is 24 bits
-;; we know if we have reached the final entry if our internal counter == entries (stored at 0x8D00)
-;; each starting read address is [0x8100 + (index * 24)], and the corresponding 20/24 bit declaration
-;; is found at 0x8D04 + (i*4)
-;; So we dont need any registers preset before doing this
-;;     _____________________________________________________________
-;;     | Offset 0:  Base Address   (8 bytes, low dword + high dword)
-;;     | Offset 8:  Length         (8 bytes, low dword + high dword)
-;;     | Offset 16: Type           (4 bytes) — 1=Usable, 2=Reserved, 3=ACPI Reclaimable, 4=ACPI NVS, 5=Bad Memory
-;;     | Offset 20: Ext Attributes (4 bytes, optional, only if BIOS returns 24)
-;;     -------------------------------------------------------------
+;; Prints formatted E820 memory map entries stored at 0x8100.
+;; Uses 64-bit decimal formatting for entry length and base address display.
 print_memory_map:
     pusha
+
     mov si, mem_msg
     call print_string
-    mov si, 0x8100 ; set SI to location of 0xE820 buffer
-    mov cx, [0x8D00] ; set CX to the number of entries
-    mov bx, 0 ; set entry counter for being used with displaying the ascii representations
+
+    mov cx, [0x8D00]                   ; Load total entry count
+    test cx, cx                        ; Are there entries?
+    jz .done                           ; If 0 entries, exit
+
+    xor bx, bx                         ; BX = 0-based entry index
+
     .entry_loop:
-        mov al, 24 ; we need 24 bytes per entry
-        mul bl ; we multiply the entry number by 24
-        add ax, 0x8100 ; we then add the base offset address
-        mov bp, ax ; and then we store in bp for later
+        ; BP = 0x8100 + (BX * 24)
+        mov ax, 24
+        mul bx                             ; AX = BX * 24
+        add ax, 0x8100                     ; Base memory offset
+        mov bp, ax                         ; BP points to current 24-byte entry
 
-        ; print the entry number
-        inc bx ; increment bx so that the print mechanic will print a 1-indexed entry number
-        mov ax, bx ; mov bx into ax
-        mov di, entry_num ; set the address for saving the entry number
-        call bin_to_dec_ascii16 ; convert to ascii characters from binary
+        ; -------------------------------------------------------------------------
+        ; 1. Print 1-indexed Entry Index
+        ; -------------------------------------------------------------------------
+        inc bx                             ; Convert to 1-based index
+        mov ax, bx
+        mov di, entry_num
+        call bin_to_dec_ascii16
 
-        mov si, entry_num ; mov into si
-        call print_string ; print the ascii number
+        mov si, entry_num
+        call print_string
 
-        mov si, return_msg ; mov into si
-        call print_string ; print the newline carriage return
+        mov si, spacer
+        call print_string
 
-        push bx
-        push cx
-        mov cx, 0x08
-        mov eax, [bp] ; move contents at address of bp to eax (only last four bytes)
+        ; -------------------------------------------------------------------------
+        ; 2. Print 64-bit Base Address (Hexadecimal)
+        ; -------------------------------------------------------------------------
         mov di, base_addr
-        call bin_to_hex_ascii32 ; conver to ascii characters to display to screen (in hex format)
-        pop cx
-        pop bx
+        mov cx, 8
+        mov eax, [bp + 4]                  ; High 32 bits of Base Address
+
+        push bx                            ; PROTECT BX from bin_to_hex_ascii32
+        call bin_to_hex_ascii32
+        pop bx                             ; RESTORE BX
+
+        mov cx, 8
+        mov eax, [bp]                      ; Low 32 bits of Base Address
+
+        push bx                            ; PROTECT BX from bin_to_hex_ascii32
+        call bin_to_hex_ascii32
+        pop bx                             ; RESTORE BX
 
         mov si, base_addr
         call print_string
-        
-        ; now print contents of the buffer
-        cmp bx, cx ; have we reached the end of entries
-        jl .entry_loop ; if not, loop back
-        
-    popa
-    ret
+
+        mov si, length_msg
+        call print_string
+
+        ; -------------------------------------------------------------------------
+        ; 3. Print 64-bit Length (Decimal)
+        ; -------------------------------------------------------------------------
+
+        mov dword edx, [bp + 12]  ; move stored bits from get_memory_map into eax (higher bits first)
+        mov dword eax, [bp + 8]   ; load the lower bytes into eax
+        mov di, length            ; load buffer address
+        call bin_to_dec_ascii64   ; convert
+
+        mov si, length
+        call print_string
+
+        ; -------------------------------------------------------------------------
+        ; 4. Print the allocation Type (Decimal)
+        ; -------------------------------------------------------------------------
+        mov dword eax, [bp + 16] ; move type value into eax (size 4 bytes, 32 bits)
+        mov di, type
+        call bin_to_dec_ascii32
+
+        mov si, type_msg
+        call print_string
+
+        mov si, type
+        call print_string
+
+        ; -------------------------------------------------------------------------
+        ; Loop Condition
+        ; -------------------------------------------------------------------------
+        mov si, return_msg
+        call print_string
+
+        cmp bx, [0x8D00]                   ; Compare 1-based index against total count
+        jl .entry_loop                     ; Loop if BX < total count
+
+    .done:
+        popa
+        ret
