@@ -22,7 +22,7 @@ bootstrap:
 terminate:
     mov [dl_loc], dl
     mov ah, 0x02 ; read sectors from drive
-    mov al, 0x03 ; how many sectors to read
+    mov al, 0x04 ; how many sectors to read
     mov ch, 0x00 ; cylinder
     mov dh, 0x00 ; head
     mov cl, 0x02 ; sector start (1 indexed)
