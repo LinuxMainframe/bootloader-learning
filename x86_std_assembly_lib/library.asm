@@ -654,3 +654,69 @@ format_size_human:
     .done:
         popad
         ret
+
+; =============================================================================
+; BIOS A20 LINE INTERACTION (INT 15h, AH=240Xh) X = 1, 2, 3, 4
+; =============================================================================
+
+; Probe A20 support
+;     AH = 2403
+;     bit 0 of BX : is A20 supported at all?
+;     bit 1 of BX : is Fast A20 via 0x92 supported?
+;     if error    : return 0xFFFF in BX
+get_a20_support:
+    pusha ; save 8 caller gen. registers onto stack
+
+    mov si, a20_probe ; print little debug message
+    call print_string
+
+    mov ax, 0x2403 ; prepare the 0x2403 call : ie. QUERY A20 GATE SUPPORT - SYSTEM - later PS/2s
+    int 0x15 ; based on interupt 0x15
+    jc .error ; if we get a CF error bit, then we jump 
+    cmp ah, 0x0 ; check if AH == 0, 
+    jnz .error_reserved
+
+    test bx, 0x0001
+    jz .not_supported
+
+    test bx, 0x0002
+    jz .no_fast_a20
+
+    mov [a20_support], bx
+    jmp .return
+
+    .not_supported:
+        mov [a20_support], bx
+
+        mov si, a20_not_supported
+        call print_string
+
+        jmp .return
+
+    .no_fast_a20:
+        mov si, no_fast_a20
+        call print_string
+        mov [a20_support], bx
+        jmp .return
+
+    .error:
+        mov si, a20_err_msg
+        call print_string
+
+        jmp .rexit
+
+    .error_reserved:
+        mov si, reserved_err_msg
+        call print_string
+
+        jmp .rexit
+
+    .return:
+        popa
+        mov bx, [a20_support]
+        ret
+
+    .rexit:
+        popa
+        mov bx, 0xFFFF
+        ret

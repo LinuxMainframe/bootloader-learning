@@ -3,7 +3,7 @@
 ; =============================================================================
 ;     AUTHOR : AIDAN A. BRADLEY
 ;     DATE   : July 22nd, 2026
-;     VERSION: v0.6.0
+;     VERSION: v0.6.1
 ; -----------------------------------------------------------------------------
 ; Loaded by the MBR (boot.asm) at physical address 0x7E00 and entered via a
 ; far jump. Running in 16-bit real mode.
@@ -13,12 +13,13 @@
 ;   2. Query BIOS INT 13h/AH=08h for the boot drive's CHS geometry.
 ;   3. Query BIOS INT 15h/AX=E820h for the system's physical memory map.
 ;   4. Print the memory map in human-readable hex/decimal form.
+;   5. Probe BIOS via INT 0x15 AX=0x2403
 ;
 ; Build:
 ;   nasm second.asm -o second.bin
 ;
 ; Memory map used by this stage (physical addresses):
-;   0x7E00 - ~0x8325 : this file's own code and data (grows as code is added)
+;   0x7E00 - ~0x8515 : this file's own code and data (grows as code is added)
 ;   0x9000 - 0x9BFF  : E820 memory map entries (128 max * 24 bytes = 3072 bytes)
 ;   0x9C00 - 0x9DFF  : per-entry ECX size returned by BIOS (128 * 4 bytes)
 ;   0x9E00           : word — total number of E820 entries retrieved
@@ -65,6 +66,11 @@ return_msg          db 0x0D, 0x0A, 0
 spacer              db " : 0x", 0
 length_msg          db " : length (bytes) ", 0
 type_msg            db " | type: ", 0
+a20_probe           db "    CHECKING A20 SUPPORT...", 0x0D, 0x0A, 0
+a20_err_msg         db "Error when probing A20 line", 0x0D, 0x0A, 0
+reserved_err_msg    db "AH not zero, either reserved or other", 0x0D, 0x0A, 0
+no_fast_a20         db "Fast A20 via 0x92 support, NOT AVAILABLE", 0x0D, 0x0A, 0
+a20_not_supported   db "A20 support, NOT AVAILABLE", 0x0D, 0x0A, 0
 
 ; --- Drive geometry state (get_drive_params) --------------------------------
 dl_loc              dw 0x0000           ; boot drive number, saved from DL at entry
@@ -83,19 +89,20 @@ entry_idx     dd 0                      ; (reserved, unused)
 
 ; --- Scratch conversion buffers, reused by multiple print routines ----------
 ; Sized generously (null-terminated) for the largest value each can hold.
-data_out_ascii db 0x00, 0x00, 0x00, 0x00, 0x00, 0                                     ; 4 hex digits + null
-bin_ascii      db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-               db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0                    ; 16-bit decimal + null
-entry_num      db 0x0, 0x0, 0x0, 0x0, 0x0, 0                                           ; entry index, decimal + null
-base_addr      db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-               db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0                            ; 64-bit base, 16 hex digits + null
-length         db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-               db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0                       ; 64-bit length, up to 20 decimal digits + null
-type           db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0                            ; type field, decimal + null
-unit_bytes     db " Bytes", 0
-unit_kib       db " KiB", 0
-unit_mib       db " MiB", 0
-unit_gib       db " GiB", 0
+data_out_ascii      db 0x00, 0x00, 0x00, 0x00, 0x00, 0                                     ; 4 hex digits + null
+bin_ascii           db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    db 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0                    ; 16-bit decimal + null
+entry_num           db 0x0, 0x0, 0x0, 0x0, 0x0, 0                                           ; entry index, decimal + null
+base_addr           db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+                    db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0                            ; 64-bit base, 16 hex digits + null
+length              db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+                    db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0                       ; 64-bit length, up to 20 decimal digits + null
+type                db 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0                            ; type field, decimal + null
+unit_bytes          db " Bytes", 0
+unit_kib            db " KiB", 0
+unit_mib            db " MiB", 0
+unit_gib            db " GiB", 0
+a20_support         dw 0
 
 ; --- E820 (BIOS memory map) inputs ------------------------------------------
 e820_max_entries dw 128            ; cap: 128 entries * 24 bytes = 3KB table
@@ -117,10 +124,12 @@ entry:
     mov si, driveprms
     call print_string
 
-    mov [dl_loc], dl                   ; DL still holds the BIOS boot-drive number here
-    call get_drive_params
-    call get_memory_map
-    call print_memory_map
+    mov [dl_loc], dl                    ; DL still holds the BIOS boot-drive number here
+    call get_drive_params               ; Get drive parameters printed
+    call get_memory_map                 ; Get the memory mapped to hardcoded 0x9000, with info stored at 0x9C00
+    call print_memory_map               ; Get the memory mapped printed out
+    call get_a20_support                ; Get A20 support (fast a20 via 0x92, or general a20 support?)
+
     jmp $                               ; nothing left to do — halt
 
 
@@ -778,3 +787,69 @@ print_memory_map:
         popa
         ret
 
+
+; =============================================================================
+; BIOS A20 LINE INTERACTION (INT 15h, AH=240Xh) X = 1, 2, 3, 4
+; =============================================================================
+
+; Probe A20 support
+;     AH = 2403
+;     bit 0 of BX : is A20 supported at all?
+;     bit 1 of BX : is Fast A20 via 0x92 supported?
+;     if error    : return 0xFFFF in BX
+get_a20_support:
+    pusha ; save 8 caller gen. registers onto stack
+
+    mov si, a20_probe ; print little debug message
+    call print_string
+
+    mov ax, 0x2403 ; prepare the 0x2403 call : ie. QUERY A20 GATE SUPPORT - SYSTEM - later PS/2s
+    int 0x15 ; based on interupt 0x15
+    jc .error ; if we get a CF error bit, then we jump 
+    cmp ah, 0x0 ; check if AH == 0, 
+    jnz .error_reserved
+
+    test bx, 0x0001
+    jz .not_supported
+
+    test bx, 0x0002
+    jz .no_fast_a20
+
+    mov [a20_support], bx
+    jmp .return
+
+    .not_supported:
+        mov [a20_support], bx
+
+        mov si, a20_not_supported
+        call print_string
+
+        jmp .return
+
+    .no_fast_a20:
+        mov si, no_fast_a20
+        call print_string
+        mov [a20_support], bx
+        jmp .return
+
+    .error:
+        mov si, a20_err_msg
+        call print_string
+
+        jmp .rexit
+
+    .error_reserved:
+        mov si, reserved_err_msg
+        call print_string
+
+        jmp .rexit
+
+    .return:
+        popa
+        mov bx, [a20_support]
+        ret
+
+    .rexit:
+        popa
+        mov bx, 0xFFFF
+        ret
