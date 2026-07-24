@@ -73,6 +73,11 @@ a20_err_msg         db "Error when probing A20 line", 0x0D, 0x0A, 0
 reserved_err_msg    db "AH not zero, either reserved or other", 0x0D, 0x0A, 0
 no_fast_a20         db "Fast A20 via 0x92 support, NOT AVAILABLE", 0x0D, 0x0A, 0
 a20_not_supported   db "A20 support, NOT AVAILABLE", 0x0D, 0x0A, 0
+a20_gate            db "Checking if A20 active...", 0x0D, 0x0A, 0
+a20_gate_err_msg    db "Error when checking if A20 active", 0x0D, 0x0A, 0
+normal_mode         db "Keyboard Controller in Normal Mode", 0x0D, 0x0A, 0
+secure_mode         db "Keyboard Controller in Secure Mode", 0x0D, 0x0A, 0
+
 
 ; --- Drive geometry state (get_drive_params) --------------------------------
 dl_loc              dw 0x0000           ; boot drive number, saved from DL at entry
@@ -105,6 +110,7 @@ unit_kib            db " KiB", 0
 unit_mib            db " MiB", 0
 unit_gib            db " GiB", 0
 a20_support         dw 0
+a20_gate_status     db 0x0
 
 ; --- E820 (BIOS memory map) inputs ------------------------------------------
 e820_max_entries dw 128            ; cap: 128 entries * 24 bytes = 3KB table
@@ -131,6 +137,7 @@ entry:
     call get_memory_map                 ; Get the memory mapped to hardcoded 0x9000, with info stored at 0x9C00
     call print_memory_map               ; Get the memory mapped printed out
     call get_a20_support                ; Get A20 support (fast a20 via 0x92, or general a20 support?)
+    call get_a20_status                 ; Get current state of A20 (disabled or enabled)
 
     jmp $                               ; nothing left to do — halt
 
@@ -795,7 +802,8 @@ print_memory_map:
 ; =============================================================================
 
 ; Probe A20 support
-;     AH = 2403
+;     AH = 0x2403
+;     CF is error flag
 ;     bit 0 of BX : is A20 supported at all?
 ;     bit 1 of BX : is Fast A20 via 0x92 supported?
 ;     if error    : return 0xFFFF in BX
@@ -855,3 +863,51 @@ get_a20_support:
         popa
         mov bx, 0xFFFF
         ret
+
+; Get A20 gate status
+;     AX = 0x2402
+;     CF is error flag
+;     returns AL, 0 for disabled, 1 for enabled
+;     CX is unknown usage
+;     AH = 0x0 for normal success, 0x1 for keyboard controller is in secure mode, 0x86 function not supported
+;     RETURN:
+;         AL is set to 0xF if error, otherwise it carries original AL contents
+get_a20_status:
+    pusha
+
+    mov si, a20_gate ; print a debug message
+    call print_string
+
+    mov ax, 0x2402 ; request gate status
+    int 0x15
+    jc .error ; jump to error state if CF set
+
+    cmp ah, 0x0 ; if AH is zero, normal success
+    je .normal
+    cmp ah, 0x1 ; if AH is one, then keyboard controller is in secure mode
+    je .secure
+    jg .error   ; else not supported
+    mov [a20_gate_status], al
+
+    .return:
+        popa
+        mov al, [a20_gate_status]
+        ret
+
+    .normal:
+        mov [a20_gate_status], al
+        mov si, normal_mode
+        call print_string
+        jmp .return
+
+    .secure:
+        mov [a20_gate_status], al
+        mov si, secure_mode
+        call print_string
+        jmp .return
+
+    .error:
+        mov byte [a20_gate_status], 0xF ; return 0xF if error
+        mov si, a20_gate_err_msg
+        call print_string
+        jmp .return
