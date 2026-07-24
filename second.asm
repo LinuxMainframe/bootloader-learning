@@ -19,7 +19,9 @@
 ;   nasm second.asm -o second.bin
 ;
 ; Memory map used by this stage (physical addresses):
-;   0x7E00 - ~0x8515 : this file's own code and data (grows as code is added)
+;   0x7E00 - ~0x8515 : this file's own code and data (grows as code is added) (max 
+;                      size before hitting 0x9000 is 4600 bytes, as determined 
+;                      in the boot.asm)
 ;   0x9000 - 0x9BFF  : E820 memory map entries (128 max * 24 bytes = 3072 bytes)
 ;   0x9C00 - 0x9DFF  : per-entry ECX size returned by BIOS (128 * 4 bytes)
 ;   0x9E00           : word — total number of E820 entries retrieved
@@ -196,6 +198,7 @@ bin_to_hex_ascii16:
         mov ax, bx                      ; restore the value for the next nibble
         cmp cx, 0
         jg .loop
+        mov byte [di], 0x00
         ret
 
 
@@ -237,6 +240,7 @@ bin_to_hex_ascii32:
         mov eax, ebx
         cmp cx, 0
         jg .loop
+        mov byte [di], 0x00
         ret
 
 
@@ -303,7 +307,6 @@ bin_to_dec_ascii32:
     push ebx
     push ecx
     push edx
-    push di
 
     xor ecx, ecx
     mov ebx, 10
@@ -327,7 +330,6 @@ bin_to_dec_ascii32:
 
         mov byte [di], 0x0
 
-        pop di
         pop edx
         pop ecx
         pop ebx
