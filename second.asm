@@ -79,6 +79,8 @@ normal_mode         db "Keyboard Controller in Normal Mode", 0x0D, 0x0A, 0
 secure_mode         db "Keyboard Controller in Secure Mode", 0x0D, 0x0A, 0
 a20_disabled        db "A20 gate not enabled!", 0x0D, 0x0A, 0
 a20_enabled         db "A20 gate enabled!", 0x0D, 0x0A, 0
+a20_failed_simple   db "A20 gate failed to be enabled via simple method", 0x0D, 0x0A, 0
+a20_success_simple  db "A20 gate enabled succesfully (check with memory wraparound test).", 0x0D, 0x0A, 0
 
 
 ; --- Drive geometry state (get_drive_params) --------------------------------
@@ -113,6 +115,7 @@ unit_mib            db " MiB", 0
 unit_gib            db " GiB", 0
 a20_support         dw 0
 a20_gate_status     db 0x0
+a20_enable_flag     db 0x0
 
 ; --- E820 (BIOS memory map) inputs ------------------------------------------
 e820_max_entries dw 128            ; cap: 128 entries * 24 bytes = 3KB table
@@ -140,6 +143,7 @@ entry:
     call print_memory_map               ; Get the memory mapped printed out
     call get_a20_support                ; Get A20 support (fast a20 via 0x92, or general a20 support?)
     call get_a20_status                 ; Get current state of A20 (disabled or enabled)
+    call enable_a20_s
 
     jmp $                               ; nothing left to do — halt
 
@@ -926,4 +930,32 @@ get_a20_status:
         pop dx
         pop cx
         pop bx
+        ret
+
+; Set A20 line, straightforward method
+;   AX = 0x2401
+;   int 0x15
+;   RETURNS:
+;     CF = 0 if successful
+;     AL = 0 for failure
+;     AL = 1 for success
+enable_a20_s:
+    pusha
+
+    mov ax, 0x2401
+    int 0x15
+    jc .failed
+    mov byte [a20_enable_flag], 0x1
+    mov si, a20_success_simple
+    call print_string
+    jnc .return
+
+    .failed:
+        mov si, a20_failed_simple
+        call print_string
+        mov byte [a20_enable_flag], 0x0
+
+    .return:
+        popa
+        mov al, [a20_enable_flag]
         ret
