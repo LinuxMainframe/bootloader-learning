@@ -35,6 +35,7 @@
 ; References:
 ;       https://www.cs.cmu.edu/~ralf/files.html - Ralph Brown's Interrup List
 ;       https://mirror.math.princeton.edu/pub/oldlinux/Linux.old/docs/interrupts/int-html/int-15.htm
+;       https://wiki.osdev.org/CPUID
 ; =============================================================================
 
 [org 0x7E00]
@@ -85,6 +86,8 @@ a20_disabled        db "A20 gate not enabled!", 0x0D, 0x0A, 0
 a20_enabled         db "A20 gate enabled!", 0x0D, 0x0A, 0
 a20_failed_simple   db "A20 gate failed to be enabled via simple method", 0x0D, 0x0A, 0
 a20_success_simple  db "A20 gate enabled succesfully (check with memory wraparound test).", 0x0D, 0x0A, 0
+cpuidNotSupported   db "CPUID bit flip didnt stick, CPUID not available.", 0x0D, 0x0A, 0
+cpuidSupported      db "CPUID bit flip stuck, CPUID available.", 0x0D, 0x0A, 0
 
 
 ; --- Drive geometry state (get_drive_params) --------------------------------
@@ -146,7 +149,22 @@ entry:
     call get_memory_map                 ; Get the memory mapped to hardcoded 0x9000, with info stored at 0x9C00
     call print_memory_map               ; Get the memory mapped printed out
 
-    jmp $                               ; nothing left to do — halt
+    call check_cpuid_available          ; Check if CPUID is supported
+    cmp eax, 0x0
+    jz .noCPUID
+    jmp ._CPUID
+
+    .noCPUID:
+         mov si, cpuidNotSupported
+         call print_string
+         jmp .continue
+
+    ._CPUID:
+        mov si, cpuidSupported
+        call print_string
+
+    .continue:
+        jmp $                               ; nothing left to do — halt
 
 
 ; =============================================================================
@@ -1035,3 +1053,40 @@ memwrap_test:
         pop cx
         pop bx
         ret
+
+; =============================================================================
+; CPUID FUNCTIONS
+; =============================================================================
+
+; check cpuid availability
+;    essentially we push two copies of the flags registers
+;    then we modify the stack directly using [esp], so we
+;    dont need to pop out, modify and then repush.
+;    
+;    In order:
+;        - 1.) Save two copies of EFLAGS
+;        - 2.) XOR the stack address containing the EFLAGS (2nd copy gets modified) with 0x00200000
+;        - 3.) Pop EFLAGS out (the 2nd modified copy)
+;        - 4.) Push them back on (may not be modified)
+;        - 5.) pop EFLAGS into eax
+;        - 6.) XOR the 1st copy and our modified copy together
+;        - 7.) Then restore the original EFLAGS
+;        - 8.) AND the EAX storage with 0x00200000, which will tell us if ID bit was switched
+;    You may wonder why we do the sequential popfd and pushfd after the xor dword [esp],
+;    this is for pushing our modified stack copy into the real EFLAGS register, which 
+;    will allow the machine to either accept the bit flip or return it to zero.
+;    If the bit flip survives the stack pop, then we know CPUID is supported.
+check_cpuid_available:
+    pushfd ; store first copy
+    pushfd ; store a second copy to modify
+    xor dword [esp], 0x00200000 ; modify in place, instead of popping and pushing
+
+    popfd ; now pop to the eflags
+    pushfd ; ID MAY NOT BE INVERTED THIS TIME
+
+    pop eax ; modified eflags
+    xor eax, [esp] ; compare the flag changes
+    popfd ; restore original EFLAGS
+
+    and eax, 0x00200000 ; eax = zero if ID bit cant be changed, else non-zero
+    ret
