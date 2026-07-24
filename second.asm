@@ -44,7 +44,8 @@ stagetwo:
 ; =============================================================================
 
 ; --- Static strings ----------------------------------------------------------
-stagemsg            db "Loaded stage two!", 0x0D, 0x0A, 0
+stagemsg            db "STAGE 2: FAR JUMP SUCCESSFUL", 0x0D, 0x0A, 0
+driveprms           db "    READING DRIVE PARAMETERS...", 0x0D, 0x0A, 0
 read_err            db "Failed to read drive parameters", 0x0D, 0x0A, 0
 cyl_msg             db "You have the following cylinders available: 0x", 0
 hd_msg              db "You have the following heads available: 0x", 0
@@ -112,6 +113,8 @@ smap_sign        dd 0x534D4150     ; ASCII 'SMAP', required signature for INT 15
 ; -----------------------------------------------------------------------------
 entry:
     mov si, stagemsg
+    call print_string
+    mov si, driveprms
     call print_string
 
     mov [dl_loc], dl                   ; DL still holds the BIOS boot-drive number here
