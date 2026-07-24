@@ -932,7 +932,7 @@ get_a20_status:
         pop bx
         ret
 
-; Set A20 line, straightforward method
+; Enable A20 line, straightforward method
 ;   AX = 0x2401
 ;   int 0x15
 ;   RETURNS:
@@ -948,7 +948,7 @@ enable_a20_s:
     mov byte [a20_enable_flag], 0x1
     mov si, a20_success_simple
     call print_string
-    jnc .return
+    jmp .return
 
     .failed:
         mov si, a20_failed_simple
@@ -959,3 +959,16 @@ enable_a20_s:
         popa
         mov al, [a20_enable_flag]
         ret
+
+; Enable A20 line, fast method method
+; Does not return anything or confirm anything
+; Requires the memory wraparound test to confirm
+; But if it isnt supported, the machine is OLD!
+enable_a20_fast:
+    pusha
+
+    in al, 0x92
+    or al, 2
+    out 0x92, al
+
+    popa
