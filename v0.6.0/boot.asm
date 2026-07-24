@@ -1,10 +1,3 @@
-; =============================================================================
-; boot.asm — Stage One Bootloader
-; =============================================================================
-;     AUTHOR : AIDAN A. BRADLEY
-;     DATE   : July 22nd, 2026
-;     VERSION: v0.6.0
-; -----------------------------------------------------------------------------
 [org 0x7C00]
 [bits 16]
 
@@ -14,6 +7,7 @@ start:
 
 dl_loc dw 0x0000
 errmsg db "Error occured during read", 0x0D, 0x0A, 0
+msg db "Hello World!", 0x0D, 0x0A, 0
 
 bootstrap:
     xor ax, ax
@@ -57,6 +51,27 @@ print_string:
     jmp print_string
     .zero:
         ret
+
+strcmp:
+    .loop:
+        mov al, [si]
+        mov bl, [di]
+        cmp al, bl
+        jne .not_equal
+
+        cmp al, 0
+        je .done
+
+        inc di
+        inc si
+        jmp .loop
+    .not_equal:
+        clc
+        ret
+    .done:
+        stc
+        ret
+
 
 times (510-($-$$)) db 0
 dw 0xAA55
