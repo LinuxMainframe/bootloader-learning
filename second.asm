@@ -31,6 +31,10 @@
 ; (~0x8100) and it silently grew into the running code/buffers as more
 ; entries came back from BIOS — always leave generous headroom here as this
 ; file grows.
+; -----------------------------------------------------------------------------
+; References:
+;       https://www.cs.cmu.edu/~ralf/files.html - Ralph Brown's Interrup List
+;       https://mirror.math.princeton.edu/pub/oldlinux/Linux.old/docs/interrupts/int-html/int-15.htm
 ; =============================================================================
 
 [org 0x7E00]
@@ -141,9 +145,6 @@ entry:
     call get_drive_params               ; Get drive parameters printed
     call get_memory_map                 ; Get the memory mapped to hardcoded 0x9000, with info stored at 0x9C00
     call print_memory_map               ; Get the memory mapped printed out
-    call get_a20_support                ; Get A20 support (fast a20 via 0x92, or general a20 support?)
-    call get_a20_status                 ; Get current state of A20 (disabled or enabled)
-    call enable_a20_s
 
     jmp $                               ; nothing left to do — halt
 
@@ -960,15 +961,77 @@ enable_a20_s:
         mov al, [a20_enable_flag]
         ret
 
-; Enable A20 line, fast method method
-; Does not return anything or confirm anything
-; Requires the memory wraparound test to confirm
-; But if it isnt supported, the machine is OLD!
+; Enable A20 line, fast method (Port 0x92)
+; Safe version: ensures Bit 0 (Fast Reset) is NEVER set!
 enable_a20_fast:
-    pusha
+    push ax
 
     in al, 0x92
-    or al, 2
+    test al, 2                  ; Is A20 already enabled?
+    jnz .done                   ; If Bit 1 is already set, don't touch it!
+
+    and al, 0xFE                ; Clear Bit 0 (prevent fast reboot!)
+    or al, 0x02                 ; Set Bit 1 (enable A20)
     out 0x92, al
 
-    popa
+    .done:
+        pop ax
+        ret
+
+; Memory wraparound test
+; Tests 0x0000:0x0500 against 0xFFFF:0x0510 (1 MiB boundary)
+; RETURNS: AL = 1 if enabled, 0 if disabled
+memwrap_test:
+    push bx
+    push cx
+    push ds
+    push es
+    push si
+    push di
+
+    ; DS:SI = 0x0000:0x0500
+    xor ax, ax
+    mov ds, ax
+    mov si, 0x0500
+
+    ; ES:DI = 0xFFFF:0x0510
+    mov ax, 0xFFFF
+    mov es, ax
+    mov di, 0x0510
+
+    ; Save original bytes so we don't corrupt BDA RAM
+    mov cl, [ds:si]
+    mov ch, [es:di]
+
+    ; Write conflicting values
+    mov byte [ds:si], 0x00
+    mov byte [es:di], 0xFF
+
+    ; Check if writing to [ES:DI] overwritten [DS:SI]
+    cmp byte [ds:si], 0xFF
+
+    ; Restore original memory contents immediately
+    mov [ds:si], cl
+    mov [es:di], ch
+
+    je .disabled                ; Equal -> wrapped around -> A20 disabled
+
+    .enabled:
+        mov si, a20_enabled
+        call print_string
+        mov al, 1
+        jmp .return
+
+    .disabled:
+        mov si, a20_disabled
+        call print_string
+        mov al, 0
+
+    .return:
+        pop di
+        pop si
+        pop es
+        pop ds
+        pop cx
+        pop bx
+        ret
