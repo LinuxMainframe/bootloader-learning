@@ -31,7 +31,7 @@ bootstrap:
 
     mov [dl_loc], dl ;  load drive ID
     mov ah, 0x02 ; read sectors from drive
-    mov al, 0x05 ; how many sectors to read
+    mov al, 0x06 ; how many sectors to read
     mov ch, 0x00 ; cylinder
     mov dh, 0x00 ; head
     mov cl, 0x02 ; sector start (1 indexed)

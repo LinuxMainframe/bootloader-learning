@@ -77,6 +77,8 @@ a20_gate            db "Checking if A20 active...", 0x0D, 0x0A, 0
 a20_gate_err_msg    db "Error when checking if A20 active", 0x0D, 0x0A, 0
 normal_mode         db "Keyboard Controller in Normal Mode", 0x0D, 0x0A, 0
 secure_mode         db "Keyboard Controller in Secure Mode", 0x0D, 0x0A, 0
+a20_disabled        db "A20 gate not enabled!", 0x0D, 0x0A, 0
+a20_enabled         db "A20 gate enabled!", 0x0D, 0x0A, 0
 
 
 ; --- Drive geometry state (get_drive_params) --------------------------------
@@ -865,49 +867,63 @@ get_a20_support:
         ret
 
 ; Get A20 gate status
-;     AX = 0x2402
-;     CF is error flag
-;     returns AL, 0 for disabled, 1 for enabled
-;     CX is unknown usage
-;     AH = 0x0 for normal success, 0x1 for keyboard controller is in secure mode, 0x86 function not supported
-;     RETURN:
-;         AL is set to 0xF if error, otherwise it carries original AL contents
+;   AX = 0x2402
+;   RETURNS:
+;     AL = 0 if disabled, 1 if enabled, 0xF if error
 get_a20_status:
-    pusha
+    push bx
+    push cx
+    push dx
+    push si
 
-    mov si, a20_gate ; print a debug message
+    mov si, a20_gate            ; Print initial status message
     call print_string
 
-    mov ax, 0x2402 ; request gate status
+    mov ax, 0x2402              ; Query A20 status
     int 0x15
-    jc .error ; jump to error state if CF set
+    jc .error                   ; Carry flag set = BIOS error
 
-    cmp ah, 0x0 ; if AH is zero, normal success
-    je .normal
-    cmp ah, 0x1 ; if AH is one, then keyboard controller is in secure mode
-    je .secure
-    jg .error   ; else not supported
-    mov [a20_gate_status], al
+    ; Check Return Status in AH
+    cmp ah, 0x00
+    je .normal_mode
+    cmp ah, 0x01
+    je .secure_mode
+    jmp .error                  ; AH >= 0x80 means unsupported/error
 
-    .return:
-        popa
-        mov al, [a20_gate_status]
-        ret
-
-    .normal:
-        mov [a20_gate_status], al
+    .normal_mode:
         mov si, normal_mode
         call print_string
-        jmp .return
+        jmp .check_gate_state
 
-    .secure:
-        mov [a20_gate_status], al
+    .secure_mode:
         mov si, secure_mode
         call print_string
-        jmp .return
+
+    .check_gate_state:
+        ; AL holds gate status (0 = disabled, 1 = enabled)
+        test al, al
+        jz .disabled
+
+    .enabled:
+        mov si, a20_enabled
+        call print_string
+        mov al, 1
+        jmp .done
+
+    .disabled:
+        mov si, a20_disabled
+        call print_string
+        mov al, 0
+        jmp .done
 
     .error:
-        mov byte [a20_gate_status], 0xF ; return 0xF if error
         mov si, a20_gate_err_msg
         call print_string
-        jmp .return
+        mov al, 0x0F
+
+    .done:
+        pop si
+        pop dx
+        pop cx
+        pop bx
+        ret
